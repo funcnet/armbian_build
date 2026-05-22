@@ -180,7 +180,7 @@ function adaptative_prepare_host_dependencies() {
 		swig # swig is needed for some u-boot's. example: "bananapi.conf"
 		u-boot-tools
 		udev # causes initramfs rebuild, but is usually pre-installed.
-		uuid-dev uuid-runtime # uuid-runtime provides uuidgen for unique Docker image tags
+		uuid-dev
 		zlib1g-dev
 
 		# by-category below

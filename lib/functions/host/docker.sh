@@ -127,11 +127,11 @@ function cli_handle_docker() {
 function docker_cli_prepare() {
 	# @TODO: Make sure we can access docker, on Linux; gotta be part of 'docker' group: grep -q "$(whoami)" <(getent group docker)
 
-	# Lock file for serializing Docker image builds across parallel runners on same host
-	# Prevents "AlreadyExists" errors when multiple runners try to build the same tag
-	# Uses ${SRC}/cache/docker which is guaranteed to be writable by the build process
-	declare -g DOCKER_BUILD_LOCK_FILE="${SRC}/cache/docker/.build-initial.lock"
-	declare -g DOCKER_ARMBIAN_INITIAL_IMAGE_TAG="armbian.local.only/armbian-build:initial"
+	# Unique tag per build to avoid collisions when multiple runners build in parallel on
+	# the same host under different users (shared Docker daemon, separate ${SRC} trees).
+	declare build_suffix="${ARMBIAN_BUILD_UUID:-$(uuidgen)}"
+	build_suffix="${build_suffix:0:8}"
+	declare -g DOCKER_ARMBIAN_INITIAL_IMAGE_TAG="armbian.local.only/armbian-build:${build_suffix}"
 	# declare -g DOCKER_ARMBIAN_BASE_IMAGE="${DOCKER_ARMBIAN_BASE_IMAGE:-"debian:trixie"}"
 	# declare -g DOCKER_ARMBIAN_BASE_IMAGE="${DOCKER_ARMBIAN_BASE_IMAGE:-"debian:bookworm"}"
 	# declare -g DOCKER_ARMBIAN_BASE_IMAGE="${DOCKER_ARMBIAN_BASE_IMAGE:-"debian:sid"}"
@@ -395,38 +395,8 @@ function docker_cli_build_dockerfile() {
 
 	display_alert "Building" "Dockerfile via '${DOCKER_BUILDX_OR_BUILD[*]}'" "info"
 
-	# Serialize the Docker build across parallel runners using flock.
-	# First caller builds the image; subsequent callers wait and reuse the already-built image.
-	# Lock timeout is 1 hour - builds should never take that long, but prevents permanent deadlock.
-	declare -i lock_timeout=3600
-	declare build_result
-
-	# Ensure lock file directory and file exist before using flock
-	mkdir -p "$(dirname "${DOCKER_BUILD_LOCK_FILE}")"
-	touch "${DOCKER_BUILD_LOCK_FILE}" 2>/dev/null || {
-		exit_with_error "Cannot create lock file '${DOCKER_BUILD_LOCK_FILE}'"
-	}
-
-	display_alert "Acquiring Docker build lock" "${DOCKER_BUILD_LOCK_FILE}" "debug"
-	if build_result=$(flock -w ${lock_timeout} "${DOCKER_BUILD_LOCK_FILE}" bash -c "
-		# Inside the lock: check if image already exists (another runner built it while we waited)
-		if docker image inspect '${DOCKER_ARMBIAN_INITIAL_IMAGE_TAG}' &>/dev/null; then
-			echo 'already_built'
-			exit 0
-		fi
-		# Build the image
-		BUILDKIT_COLORS='run=123,20,245:error=yellow:cancel=blue:warning=white' \
-			docker '${DOCKER_BUILDX_OR_BUILD[@]}' -t '${DOCKER_ARMBIAN_INITIAL_IMAGE_TAG}' -f '${SRC}'/Dockerfile '${SRC}'
-		echo 'built'
-	" 2>&1); then
-		if [[ "$build_result" == *"already_built"* ]]; then
-			display_alert "Docker image" "already built by another runner, reusing '${DOCKER_ARMBIAN_INITIAL_IMAGE_TAG}'" "info"
-		else
-			display_alert "Docker image" "built successfully '${DOCKER_ARMBIAN_INITIAL_IMAGE_TAG}'" "info"
-		fi
-	else
-		exit_with_error "Docker build failed or lock timeout after ${lock_timeout}s"
-	fi
+	BUILDKIT_COLORS="run=123,20,245:error=yellow:cancel=blue:warning=white" \
+		run_host_command_logged docker "${DOCKER_BUILDX_OR_BUILD[@]}" -t "${DOCKER_ARMBIAN_INITIAL_IMAGE_TAG}" -f "${SRC}"/Dockerfile "${SRC}"
 }
 
 function docker_cli_prepare_launch() {
